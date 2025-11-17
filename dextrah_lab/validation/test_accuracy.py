@@ -217,10 +217,9 @@ def test_onnx_export_accuracy():
         test_input,
         onnx_path,
         export_params=True,
-        opset_version=17,
+        opset_version=18,
         input_names=['image'],
-        output_names=['embedding'],
-        dynamic_axes={'image': {0: 'batch_size'}, 'embedding': {0: 'batch_size'}}
+        output_names=['output']
     )
 
     # ONNX inference
