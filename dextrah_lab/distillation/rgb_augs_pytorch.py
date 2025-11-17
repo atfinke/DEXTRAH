@@ -15,10 +15,13 @@ from torchvision import transforms
 
 
 class ModifySaturation(nn.Module):
-    """PyTorch implementation of modify_saturation_kernel"""
+    """PyTorch implementation of modify_saturation_kernel - ONNX compatible"""
 
-    def forward(self, rgb, gray, saturation, max_pixels):
+    def forward(self, rgb: torch.Tensor, gray: torch.Tensor,
+                saturation: torch.Tensor, max_pixels: torch.Tensor) -> torch.Tensor:
         """
+        Apply saturation adjustment to RGB images.
+
         Args:
             rgb: (B, 3, H, W) - Input RGB images
             gray: (B, H, W) - Grayscale version
@@ -34,19 +37,22 @@ class ModifySaturation(nn.Module):
         # Apply saturation adjustment: gray + saturation * (rgb - gray)
         rgb_out = gray + saturation * (rgb - gray)
 
-        # Clamp to [0, max_pixels] per channel
-        for c in range(3):
-            max_val = max_pixels[:, c].view(-1, 1, 1, 1)
-            rgb_out[:, c:c+1, :, :] = torch.clamp(rgb_out[:, c:c+1, :, :], 0.0, max_val)
+        # Vectorized clamping per channel
+        max_pixels_expanded = max_pixels.view(-1, 3, 1, 1)  # (B, 3, 1, 1)
+        rgb_out = torch.clamp(rgb_out, min=0.0)
+        rgb_out = torch.min(rgb_out, max_pixels_expanded)
 
         return rgb_out
 
 
 class ModifyContrast(nn.Module):
-    """PyTorch implementation of modify_contrast_kernel"""
+    """PyTorch implementation of modify_contrast_kernel - ONNX compatible"""
 
-    def forward(self, rgb, avg_brightness, contrast, max_pixels):
+    def forward(self, rgb: torch.Tensor, avg_brightness: torch.Tensor,
+                contrast: torch.Tensor, max_pixels: torch.Tensor) -> torch.Tensor:
         """
+        Apply contrast adjustment to RGB images.
+
         Args:
             rgb: (B, 3, H, W) - Input RGB images
             avg_brightness: (B,) - Average brightness per image
@@ -62,19 +68,22 @@ class ModifyContrast(nn.Module):
         # Apply contrast adjustment: avg + contrast * (rgb - avg)
         rgb_out = avg_brightness + contrast * (rgb - avg_brightness)
 
-        # Clamp to [0, max_pixels] per channel
-        for c in range(3):
-            max_val = max_pixels[:, c].view(-1, 1, 1, 1)
-            rgb_out[:, c:c+1, :, :] = torch.clamp(rgb_out[:, c:c+1, :, :], 0.0, max_val)
+        # Vectorized clamping per channel
+        max_pixels_expanded = max_pixels.view(-1, 3, 1, 1)  # (B, 3, 1, 1)
+        rgb_out = torch.clamp(rgb_out, min=0.0)
+        rgb_out = torch.min(rgb_out, max_pixels_expanded)
 
         return rgb_out
 
 
 class ModifyBrightness(nn.Module):
-    """PyTorch implementation of modify_brightness_kernel"""
+    """PyTorch implementation of modify_brightness_kernel - ONNX compatible"""
 
-    def forward(self, rgb, brightness, max_pixels):
+    def forward(self, rgb: torch.Tensor, brightness: torch.Tensor,
+                max_pixels: torch.Tensor) -> torch.Tensor:
         """
+        Apply brightness adjustment to RGB images.
+
         Args:
             rgb: (B, 3, H, W) - Input RGB images
             brightness: (B,) - Brightness factors
@@ -88,32 +97,32 @@ class ModifyBrightness(nn.Module):
         # Apply brightness adjustment: rgb * brightness
         rgb_out = rgb * brightness
 
-        # Clamp to [0, max_pixels] per channel
-        for c in range(3):
-            max_val = max_pixels[:, c].view(-1, 1, 1, 1)
-            rgb_out[:, c:c+1, :, :] = torch.clamp(rgb_out[:, c:c+1, :, :], 0.0, max_val)
+        # Vectorized clamping per channel
+        max_pixels_expanded = max_pixels.view(-1, 3, 1, 1)  # (B, 3, 1, 1)
+        rgb_out = torch.clamp(rgb_out, min=0.0)
+        rgb_out = torch.min(rgb_out, max_pixels_expanded)
 
         return rgb_out
 
 
 class ModifyHue(nn.Module):
-    """PyTorch implementation of modify_hue_kernel"""
+    """PyTorch implementation of modify_hue_kernel - ONNX compatible"""
 
-    def forward(self, h, hue):
+    def forward(self, h: torch.Tensor, hue: torch.Tensor) -> torch.Tensor:
         """
+        Apply hue adjustment to hue channel.
+
         Args:
-            h: (B, H, W) - Hue channel
+            h: (B, H, W) - Hue channel [0, 1]
             hue: (B,) - Hue adjustment values
         Returns:
-            h_out: (B, H, W) - Adjusted hue channel
+            h_out: (B, H, W) - Adjusted hue channel [0, 1]
         """
         # Expand dimensions for broadcasting
         hue = hue.view(-1, 1, 1)  # (B, 1, 1)
 
-        # Add hue adjustment
+        # Add hue adjustment and wrap around [0, 1]
         h_out = h + hue
-
-        # Wrap around [0, 1]
         h_out = torch.where(h_out >= 1.0, h_out - 1.0, h_out)
         h_out = torch.where(h_out < 0.0, h_out + 1.0, h_out)
 
@@ -121,14 +130,16 @@ class ModifyHue(nn.Module):
 
 
 class Conv2DBlur(nn.Module):
-    """PyTorch implementation of conv2d (motion blur) kernel"""
+    """PyTorch implementation of conv2d (motion blur) kernel - ONNX compatible"""
 
-    def forward(self, rgb, kernel, alpha):
+    def forward(self, rgb: torch.Tensor, kernel: torch.Tensor, alpha: float) -> torch.Tensor:
         """
+        Apply motion blur via 2D convolution.
+
         Args:
             rgb: (B, 3, H, W) - Input RGB images
             kernel: (1, kernel_size, kernel_size) - Convolution kernel
-            alpha: float - Blending factor
+            alpha: float - Blending factor [0, 1]
         Returns:
             rgb_out: (B, 3, H, W) - Blurred RGB images
         """
@@ -136,28 +147,27 @@ class Conv2DBlur(nn.Module):
         padding = kernel_size // 2
 
         # Expand kernel to 3 channels (same kernel for R, G, B)
-        # Shape: (3, 1, kernel_size, kernel_size)
-        kernel_3ch = kernel.unsqueeze(0).repeat(3, 1, 1, 1)
+        kernel_3ch = kernel.unsqueeze(0).repeat(3, 1, 1, 1)  # (3, 1, K, K)
 
         # Apply depthwise convolution (each channel independently)
         blurred = F.conv2d(rgb, kernel_3ch, padding=padding, groups=3)
 
-        # Clamp and blend
+        # Clamp and blend with original
         blurred = torch.clamp(blurred, 0.0, 1.0)
         rgb_out = alpha * blurred + (1.0 - alpha) * rgb
 
         return rgb_out
 
 
-def rgb_to_hsv(image):
+def rgb_to_hsv(image: torch.Tensor) -> torch.Tensor:
     """
     Convert RGB to HSV color space.
-    Ripped from PyTorch source code (torchvision)
+    Adapted from PyTorch/torchvision source code.
 
     Args:
-        image: (B, 3, H, W) - RGB images
+        image: (B, 3, H, W) - RGB images in [0, 1]
     Returns:
-        hsv: (B, 3, H, W) - HSV images
+        hsv: (B, 3, H, W) - HSV images, H in [0, 1], S in [0, 1], V in [0, 1]
     """
     r, g, _ = image.unbind(dim=-3)
 
@@ -185,15 +195,15 @@ def rgb_to_hsv(image):
     return torch.stack((h, s, maxc), dim=-3)
 
 
-def hsv_to_rgb(img):
+def hsv_to_rgb(img: torch.Tensor) -> torch.Tensor:
     """
     Convert HSV to RGB color space.
-    Ripped from PyTorch source code (torchvision)
+    Adapted from PyTorch/torchvision source code.
 
     Args:
-        img: (B, 3, H, W) - HSV images
+        img: (B, 3, H, W) - HSV images, H in [0, 1], S in [0, 1], V in [0, 1]
     Returns:
-        rgb: (B, 3, H, W) - RGB images
+        rgb: (B, 3, H, W) - RGB images in [0, 1]
     """
     h, s, v = img.unbind(dim=-3)
     h6 = h.mul(6)
