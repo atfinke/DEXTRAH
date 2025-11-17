@@ -1,0 +1,43 @@
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
+    wget \
+    unzip \
+    libc++-dev \
+    libc++abi-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.10 as default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+
+# Install Python packages
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install \
+    numpy==1.26.3 \
+    onnx==1.16.0 \
+    torch==2.4.0 \
+    protobuf==4.25.1
+
+# Create workspace
+WORKDIR /workspace
+
+# Copy QNN SDK (will be mounted from host)
+# SDK will be available at /workspace/qairt
+
+# Set up QNN environment variables
+ENV QNN_SDK_ROOT=/workspace/qairt/2.35.0.250530
+ENV PYTHONPATH=${QNN_SDK_ROOT}/lib/python:${PYTHONPATH}
+ENV LD_LIBRARY_PATH=${QNN_SDK_ROOT}/lib/x86_64-linux-clang:${LD_LIBRARY_PATH}
+ENV PATH=${QNN_SDK_ROOT}/bin/x86_64-linux-clang:${PATH}
+
+# Default command
+CMD ["/bin/bash"]
