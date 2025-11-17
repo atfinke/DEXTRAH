@@ -11,9 +11,15 @@ import matplotlib.pyplot as plt
 
 
 class AddPixelDropoutAndRandu(nn.Module):
-    """PyTorch implementation of add_pixel_dropout_and_randu_kernel"""
+    """
+    PyTorch implementation of add_pixel_dropout_and_randu_kernel.
 
-    def forward(self, depths, p_dropout, p_randu, d_min, d_max, kernel_size=2):
+    Note: Dilation logic uses torch.where which is ONNX-compatible but may differ
+    slightly from parallel Warp kernel execution.
+    """
+
+    def forward(self, depths: torch.Tensor, p_dropout: float, p_randu: float,
+                d_min: float, d_max: float, kernel_size: int = 2) -> torch.Tensor:
         """
         Args:
             depths: (B, H, W) - Input depth maps
@@ -71,9 +77,17 @@ class AddPixelDropoutAndRandu(nn.Module):
 
 
 class AddSticks(nn.Module):
-    """PyTorch implementation of add_sticks_kernel"""
+    """
+    PyTorch implementation of add_sticks_kernel.
 
-    def forward(self, depths, p_stick, max_stick_len, max_stick_width, d_min, d_max):
+    WARNING: This implementation uses Python loops and .item() calls due to the
+    data-dependent nature of stick generation. It will be SLOW compared to the
+    original Warp kernel and is NOT ONNX-exportable. Use only during training,
+    not in exported models.
+    """
+
+    def forward(self, depths: torch.Tensor, p_stick: float, max_stick_len: float,
+                max_stick_width: float, d_min: float, d_max: float) -> torch.Tensor:
         """
         Args:
             depths: (B, H, W) - Input depth maps
@@ -139,9 +153,10 @@ class AddSticks(nn.Module):
 
 
 class AddCorrelatedNoise(nn.Module):
-    """PyTorch implementation of add_correlated_noise_kernel"""
+    """PyTorch implementation of add_correlated_noise_kernel - fully vectorized"""
 
-    def forward(self, depths, sigma_s, sigma_d, d_min, d_max):
+    def forward(self, depths: torch.Tensor, sigma_s: float, sigma_d: float,
+                d_min: float, d_max: float) -> torch.Tensor:
         """
         Add correlated noise to depth maps based on:
         https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=6907054
@@ -217,9 +232,10 @@ class AddCorrelatedNoise(nn.Module):
 
 
 class AddNormalNoise(nn.Module):
-    """PyTorch implementation of add_normal_noise_kernel"""
+    """PyTorch implementation of add_normal_noise_kernel - fully vectorized"""
 
-    def forward(self, depths, sigma_theta, cam_matrix, d_min, d_max):
+    def forward(self, depths: torch.Tensor, sigma_theta: float, cam_matrix: torch.Tensor,
+                d_min: float, d_max: float) -> torch.Tensor:
         """
         Add normal-based noise to depth maps.
 
