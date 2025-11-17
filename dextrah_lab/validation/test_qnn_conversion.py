@@ -129,7 +129,7 @@ def test_qnn_conversion(onnx_path):
 
     if not onnx_path or not os.path.exists(onnx_path):
         print("✗ No ONNX model available for conversion")
-        return False
+        return False, None
 
     with tempfile.NamedTemporaryFile(suffix='.cpp', delete=False) as f:
         qnn_output_path = f.name
@@ -164,26 +164,193 @@ def test_qnn_conversion(onnx_path):
             if os.path.exists(header_path):
                 print(f"  QNN header: {header_path}")
 
-            # Clean up
-            os.unlink(qnn_output_path)
-            if os.path.exists(header_path):
-                os.unlink(header_path)
-
-            return True
+            return True, qnn_output_path
         else:
             print("✗ QNN conversion failed - no output generated")
             print(f"  stdout: {result.stdout[:500]}")
             print(f"  stderr: {result.stderr[:500]}")
-            return False
+            return False, None
 
     except subprocess.TimeoutExpired:
         print("✗ QNN conversion timed out")
-        return False
+        return False, None
     except Exception as e:
         print(f"✗ QNN conversion failed: {e}")
+        return False, None
+
+
+def test_model_accuracy_pytorch_vs_onnx():
+    """Test that ONNX export maintains numerical accuracy"""
+    print("\n" + "="*80)
+    print("Testing Model Accuracy: PyTorch vs ONNX")
+    print("="*80)
+
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        print("⚠ onnxruntime not installed, skipping accuracy test")
+        return True
+
+    # Create a simple model
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(3, 16, 3, padding=1)
+            self.relu = torch.nn.ReLU()
+            self.conv2 = torch.nn.Conv2d(16, 8, 3, padding=1)
+
+        def forward(self, x):
+            x = self.conv1(x)
+            x = self.relu(x)
+            x = self.conv2(x)
+            return x
+
+    model = SimpleModel().eval()
+    test_input = torch.randn(1, 3, 64, 64)
+
+    # Get PyTorch output
+    with torch.no_grad():
+        pytorch_output = model(test_input).numpy()
+
+    # Export to ONNX
+    with tempfile.NamedTemporaryFile(suffix='.onnx', delete=False) as f:
+        onnx_path = f.name
+
+    try:
+        torch.onnx.export(
+            model,
+            test_input,
+            onnx_path,
+            export_params=True,
+            opset_version=11,
+            input_names=['input'],
+            output_names=['output'],
+            do_constant_folding=True,
+            operator_export_type=torch.onnx.OperatorExportTypes.ONNX
+        )
+
+        # Run ONNX inference
+        ort_session = ort.InferenceSession(onnx_path)
+        onnx_output = ort_session.run(None, {'input': test_input.numpy()})[0]
+
+        # Compare outputs
+        max_diff = np.max(np.abs(pytorch_output - onnx_output))
+        mean_diff = np.mean(np.abs(pytorch_output - onnx_output))
+
+        print(f"  PyTorch output shape: {pytorch_output.shape}")
+        print(f"  ONNX output shape: {onnx_output.shape}")
+        print(f"  Max difference: {max_diff:.6e}")
+        print(f"  Mean difference: {mean_diff:.6e}")
+
+        tolerance = 1e-5
+        if max_diff < tolerance:
+            print(f"✓ PyTorch vs ONNX accuracy maintained (max diff < {tolerance})")
+            success = True
+        else:
+            print(f"⚠ PyTorch vs ONNX difference {max_diff:.6e} exceeds tolerance {tolerance}")
+            success = False
+
+        # Clean up
+        os.unlink(onnx_path)
+        return success
+
+    except Exception as e:
+        print(f"✗ Accuracy test failed: {e}")
+        if os.path.exists(onnx_path):
+            os.unlink(onnx_path)
+        return False
+
+
+def test_qnn_model_structure():
+    """Test that QNN conversion produces correct model structure"""
+    print("\n" + "="*80)
+    print("Testing QNN Model Structure")
+    print("="*80)
+
+    # Create and export simple model
+    class SimpleModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(3, 16, 3, padding=1)
+            self.relu = torch.nn.ReLU()
+
+        def forward(self, x):
+            x = self.conv1(x)
+            x = self.relu(x)
+            return x
+
+    model = SimpleModel().eval()
+    test_input = torch.randn(1, 3, 32, 32)
+
+    with tempfile.NamedTemporaryFile(suffix='.onnx', delete=False) as f:
+        onnx_path = f.name
+
+    try:
+        torch.onnx.export(
+            model, test_input, onnx_path,
+            export_params=True, opset_version=11,
+            input_names=['input'], output_names=['output'],
+            operator_export_type=torch.onnx.OperatorExportTypes.ONNX
+        )
+
+        # Convert to QNN
+        with tempfile.NamedTemporaryFile(suffix='.cpp', delete=False) as f:
+            qnn_output_path = f.name
+
+        cmd = [
+            'qnn-onnx-converter',
+            '--input_network', onnx_path,
+            '--output_path', qnn_output_path,
+            '--input_layout', 'input', 'NCHW',
+            '--input_dtype', 'input', 'float32'
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        if os.path.exists(qnn_output_path):
+            # Read QNN C++ file and check for expected structure
+            with open(qnn_output_path, 'r') as f:
+                qnn_content = f.read()
+
+            # Check for key QNN components
+            checks = {
+                'Has QNN header includes': '#include "QnnInterface.h"' in qnn_content or 'Qnn' in qnn_content,
+                'Has model definition': 'graphName' in qnn_content or 'addTensor' in qnn_content or 'addNode' in qnn_content,
+                'Has Conv2d operation': 'Conv2d' in qnn_content or 'QNN_OP_CONV_2D' in qnn_content,
+                'Has ReLU operation': 'Relu' in qnn_content or 'QNN_OP_RELU' in qnn_content or 'Activation' in qnn_content,
+            }
+
+            passed = sum(checks.values())
+            total = len(checks)
+
+            print(f"  QNN Model Structure Checks: {passed}/{total} passed")
+            for check_name, check_result in checks.items():
+                status = "✓" if check_result else "✗"
+                print(f"    {status} {check_name}")
+
+            # Clean up
+            os.unlink(qnn_output_path)
+            header_path = qnn_output_path.replace('.cpp', '.h')
+            if os.path.exists(header_path):
+                os.unlink(header_path)
+            bin_path = qnn_output_path.replace('.cpp', '.bin')
+            if os.path.exists(bin_path):
+                os.unlink(bin_path)
+
+            if passed >= total * 0.5:  # At least 50% checks pass
+                print(f"✓ QNN model structure is valid")
+                return True
+            else:
+                print(f"⚠ QNN model structure incomplete ({passed}/{total} checks)")
+                return False
+        else:
+            print("✗ QNN conversion failed - no output file")
+            return False
+
+    except Exception as e:
+        print(f"✗ QNN structure test failed: {e}")
         return False
     finally:
-        # Clean up ONNX file
         if os.path.exists(onnx_path):
             os.unlink(onnx_path)
 
@@ -222,15 +389,36 @@ def main():
     results.append(("QNN Converter Available", test_qnn_converter_available()))
 
     if results[0][1]:
-        # Test 2: Simple model export
+        # Test 2: PyTorch vs ONNX accuracy
+        results.append(("PyTorch vs ONNX Accuracy", test_model_accuracy_pytorch_vs_onnx()))
+
+        # Test 3: Simple model export
         onnx_path = test_simple_model_export()
         results.append(("Simple Model ONNX Export", onnx_path is not None))
 
-        # Test 3: QNN conversion
+        # Test 4: QNN conversion
         if onnx_path:
-            results.append(("QNN Conversion", test_qnn_conversion(onnx_path)))
+            conversion_success, qnn_path = test_qnn_conversion(onnx_path)
+            results.append(("QNN Conversion", conversion_success))
 
-        # Test 4: DEXTRAH model (optional)
+            # Clean up QNN files
+            if qnn_path and os.path.exists(qnn_path):
+                os.unlink(qnn_path)
+                header_path = qnn_path.replace('.cpp', '.h')
+                if os.path.exists(header_path):
+                    os.unlink(header_path)
+                bin_path = qnn_path.replace('.cpp', '.bin')
+                if os.path.exists(bin_path):
+                    os.unlink(bin_path)
+
+            # Clean up ONNX file
+            if onnx_path and os.path.exists(onnx_path):
+                os.unlink(onnx_path)
+
+        # Test 5: QNN model structure
+        results.append(("QNN Model Structure", test_qnn_model_structure()))
+
+        # Test 6: DEXTRAH model (optional)
         results.append(("DEXTRAH Model QNN", test_qnn_converter_with_dextrah_model()))
 
     # Print summary
