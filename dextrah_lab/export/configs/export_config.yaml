@@ -1,0 +1,151 @@
+# DEXTRAH Model Export Configuration
+
+model:
+  name: "dextrah_policy"
+  backbone: "resnet"  # Options: scratch, resnet, convnext
+  img_height: 240
+  img_width: 320
+  num_proprio_obs: 159
+  num_actions: 11
+
+policy:
+  mlp_units: [512, 512, 256]
+  rnn_units: 512
+  use_rnn: true
+  activation: "elu"
+
+vision_encoder:
+  n_embd: 128
+  n_head: 4
+  num_layers: 2
+  attn_dropout: 0.1
+  resid_dropout: 0.1
+
+onnx_export:
+  opset_version: 14  # QNN-compatible opset
+  dynamic_axes: true
+  batch_size: 1
+  do_constant_folding: true
+  verbose: false
+
+onnx_validation:
+  num_tests: 100
+  tolerance: 1.0e-4
+  test_rnn_states: true
+
+qnn_conversion:
+  backend: "htp"  # Hexagon Tensor Processor
+  precision: "int8"  # Options: int8, fp16, fp32
+  use_custom_ops: true
+  optimize_for_latency: true
+  enable_graph_optimization: true
+
+quantization:
+  calibration_samples: 500
+  per_channel: true
+  symmetric: false
+  algorithms: ["minmax", "percentile", "mse"]
+  percentile_value: 99.99
+
+custom_ops:
+  enable: true
+  ops:
+    - name: "DextrahCrossAttention"
+      enabled: true
+      quantize: true
+    - name: "DextrahPositionalEmbedding"
+      enabled: true
+      quantize: false
+    - name: "DextrahLayerNorm"
+      enabled: true
+      quantize: true
+    - name: "DextrahLSTMCell"
+      enabled: true
+      quantize: true
+    - name: "DextrahGELU"
+      enabled: true
+      quantize: false
+    - name: "DextrahStereoFusion"
+      enabled: true
+      quantize: true
+
+hexagon_optimization:
+  use_hvx: true
+  hvx_length: 128  # bytes
+  vectorize_threshold: 16  # Minimum elements for vectorization
+  tcm_size_kb: 512
+  prefer_int8_compute: true
+  fuse_operations: true
+
+performance_targets:
+  max_latency_ms: 10
+  min_throughput_fps: 100
+  max_power_w: 2.0
+
+output:
+  onnx_dir: "exported_models/onnx"
+  qnn_dir: "exported_models/qnn"
+  custom_ops_dir: "exported_models/qnn_custom_ops"
+  logs_dir: "exported_models/logs"
+
+# Operations re-implemented for ONNX/QNN compatibility
+reimplemented_operations:
+  - name: "Scaled Dot-Product Attention"
+    original: "F.scaled_dot_product_attention"
+    onnx_compatible: "ONNXScaledDotProductAttention"
+    description: "Explicit attention computation"
+
+  - name: "Masked Attention Operations"
+    original: "masked_fill with attention masks"
+    onnx_compatible: "ONNXCrossAttentionMask"
+    description: "Pre-computed cross-attention masks"
+
+  - name: "Adaptive Average Pooling"
+    original: "nn.AdaptiveAvgPool2d"
+    onnx_compatible: "ONNXAdaptiveAvgPool2d"
+    description: "Standard AvgPool2d with computed sizes"
+
+  - name: "GELU Activation"
+    original: "nn.GELU"
+    onnx_compatible: "ONNXGELUActivation"
+    description: "Explicit GELU using erf"
+
+  - name: "ELU Activation"
+    original: "nn.ELU"
+    onnx_compatible: "ONNXELUActivation"
+    description: "Explicit ELU implementation"
+
+  - name: "Positional Embeddings"
+    original: "nn.Embedding with dynamic indices"
+    onnx_compatible: "ONNXPositionalEmbedding"
+    description: "Pre-computed position indices"
+
+  - name: "Cross-Attention Mechanism"
+    original: "Custom stereo cross-attention"
+    onnx_compatible: "ONNXCrossOnlyAttention"
+    description: "Full stereo attention implementation"
+
+  - name: "LayerNorm"
+    original: "nn.LayerNorm"
+    onnx_compatible: "ONNXLayerNorm"
+    description: "Explicit normalization computation"
+
+  - name: "Running Mean/Std Normalization"
+    original: "RunningMeanStd"
+    onnx_compatible: "ONNXRunningMeanStd"
+    description: "Frozen statistics normalization"
+
+  - name: "LSTM State Management"
+    original: "LSTMWithDones"
+    onnx_compatible: "ONNXLSTMCell / ONNXLSTMSequential"
+    description: "Explicit LSTM with external state"
+
+  - name: "Complex Tensor Reshaping"
+    original: "view/permute/transpose chains"
+    onnx_compatible: "ONNXTensorReshaper"
+    description: "ONNX-safe reshaping operations"
+
+  - name: "BFloat16 Conversion"
+    original: "bfloat16 operations"
+    onnx_compatible: "ONNXBFloat16ToFP32Converter"
+    description: "Convert to FP32/FP16 for QNN"
